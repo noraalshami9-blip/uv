@@ -132,7 +132,7 @@ pub(crate) async fn resolve<InstalledPackages: InstalledPackagesProvider>(
     options: Options,
     logger: Box<dyn ResolveLogger>,
     printer: Printer,
-) -> Result<ResolverOutput, Error> {
+) -> Result<(ResolverOutput, HashStrategy), Error> {
     let start = std::time::Instant::now();
 
     // Resolve the requirements from the provided sources.
@@ -265,6 +265,10 @@ pub(crate) async fn resolve<InstalledPackages: InstalledPackagesProvider>(
         requirements
     };
 
+    let hasher = hasher
+        .clone()
+        .augment_with_requirements(requirements.iter());
+
     // Resolve the overrides from the provided sources.
     let overrides = {
         // Partition the overrides into named and unnamed requirements.
@@ -284,7 +288,7 @@ pub(crate) async fn resolve<InstalledPackages: InstalledPackagesProvider>(
         if !unnamed.is_empty() {
             overrides.extend(
                 NamedRequirementsResolver::new(
-                    hasher,
+                    &hasher,
                     index,
                     DistributionDatabase::new(
                         client,
@@ -313,13 +317,13 @@ pub(crate) async fn resolve<InstalledPackages: InstalledPackagesProvider>(
     let preferences = Preferences::from_iter(preferences, &resolver_env);
 
     // Determine any lookahead requirements.
-    let lookaheads = match options.dependency_mode {
+    let (lookaheads, hasher) = match options.dependency_mode {
         DependencyMode::Transitive => {
-            LookaheadResolver::new(
+            let (lookaheads, hasher) = LookaheadResolver::new(
                 &requirements,
                 &constraints,
                 &overrides,
-                hasher,
+                &hasher,
                 index,
                 DistributionDatabase::new(
                     client,
@@ -329,9 +333,10 @@ pub(crate) async fn resolve<InstalledPackages: InstalledPackagesProvider>(
             )
             .with_reporter(Arc::new(ResolverReporter::from(printer)))
             .resolve(&resolver_env)
-            .await?
+            .await?;
+            (lookaheads, hasher)
         }
-        DependencyMode::Direct => Vec::new(),
+        DependencyMode::Direct => (Vec::new(), hasher),
     };
 
     // TODO(zanieb): Consider consuming these instead of cloning
@@ -370,7 +375,7 @@ pub(crate) async fn resolve<InstalledPackages: InstalledPackagesProvider>(
             tags,
             flat_index,
             index,
-            hasher,
+            &hasher,
             build_dispatch,
             installed_packages,
             DistributionDatabase::new(
@@ -386,7 +391,7 @@ pub(crate) async fn resolve<InstalledPackages: InstalledPackagesProvider>(
 
     logger.on_complete(resolution.len(), start, printer)?;
 
-    Ok(resolution)
+    Ok((resolution, hasher))
 }
 
 #[derive(Debug, Clone, Copy)]

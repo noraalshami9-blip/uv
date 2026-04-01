@@ -118,6 +118,33 @@ impl HashStrategy {
         }
     }
 
+    /// Return a [`HashStrategy`] augmented with direct URL hashes discovered in additional
+    /// requirements after the initial command-line parse.
+    #[must_use]
+    pub fn augment_with_requirements<'a>(
+        self,
+        requirements: impl Iterator<Item = &'a Requirement>,
+    ) -> Self {
+        match self {
+            Self::None => Self::None,
+            Self::Generate(mode) => Self::Generate(mode),
+            Self::Verify(existing) => {
+                if let Some(hashes) = Self::augment_hashes(existing.as_ref(), requirements) {
+                    Self::Verify(Arc::new(hashes))
+                } else {
+                    Self::Verify(existing)
+                }
+            }
+            Self::Require(existing) => {
+                if let Some(hashes) = Self::augment_hashes(existing.as_ref(), requirements) {
+                    Self::Require(Arc::new(hashes))
+                } else {
+                    Self::Require(existing)
+                }
+            }
+        }
+    }
+
     /// Generate the required hashes from a set of [`UnresolvedRequirement`] entries.
     ///
     /// When the environment is not given, this treats all marker expressions
@@ -294,6 +321,46 @@ impl HashStrategy {
             HashCheckingMode::Verify => Ok(Self::Verify(Arc::new(hashes))),
             HashCheckingMode::Require => Ok(Self::Require(Arc::new(hashes))),
         }
+    }
+
+    /// Augment an existing set of hashes with any new direct URL hashes from the given
+    /// requirements, returning `None` if no new hashes were added.
+    fn augment_hashes<'a>(
+        existing: &FxHashMap<VersionId, Vec<HashDigest>>,
+        requirements: impl Iterator<Item = &'a Requirement>,
+    ) -> Option<FxHashMap<VersionId, Vec<HashDigest>>> {
+        let mut hashes = None;
+
+        for requirement in requirements {
+            let Some(digests) = requirement
+                .hashes()
+                .map(HashDigests::from)
+                .map(|hashes| hashes.to_vec())
+            else {
+                continue;
+            };
+            if digests.is_empty() {
+                continue;
+            }
+            let Some(id) = Self::pin(requirement) else {
+                continue;
+            };
+            if existing.contains_key(&id)
+                || hashes
+                    .as_ref()
+                    .is_some_and(|hashes: &FxHashMap<VersionId, Vec<HashDigest>>| {
+                        hashes.contains_key(&id)
+                    })
+            {
+                continue;
+            }
+
+            hashes
+                .get_or_insert_with(|| existing.clone())
+                .insert(id, digests);
+        }
+
+        hashes
     }
 
     /// Pin a [`Requirement`] to a [`PackageId`], if possible.
